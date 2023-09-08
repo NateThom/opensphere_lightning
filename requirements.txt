@@ -110,7 +110,7 @@ python-multipart==0.0.6
 pytorch-lightning==2.0.8
 pytz==2023.3.post1
 PyYAML==6.0.1
-rapidfuzz==2.15.1
+rapidfuzz==3.2.0
 readchar==4.0.5.dev0
 requests==2.31.0
 requests-toolbelt==1.0.0
