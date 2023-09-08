@@ -1,9 +1,12 @@
 import random
 import os.path as osp
 
-from .utils import image_pipeline
-from torch.utils.data import Dataset
+import numpy as np
+import cv2
 
+from skimage import transform
+
+from torch.utils.data import Dataset
 
 class ClassDataset(Dataset):
     def __init__(self, name, data_dir, ann_path,
@@ -60,17 +63,42 @@ class ClassDataset(Dataset):
         if self.noise_ratio:
             self.corrupt_label()
 
-    def prepare(self, idx):
-        # load image and pre-process (pipeline)
-        path = self.data_items[idx]['path']
-        item = {'path': osp.join(self.data_dir, path)}
-        image = image_pipeline(item, self.test_mode)
-        label = self.label_items[idx]['label']
-
-        return image, label
-
     def __len__(self):
         return len(self.data_items)
 
     def __getitem__(self, idx):
-        return self.prepare(idx)
+        # load image and pre-process (pipeline)
+        path = self.data_items[idx]['path']
+        item = {'path': osp.join(self.data_dir, path)}
+        
+        path = item['path']
+        #image = Image.open(path).convert('RGB')
+        image = cv2.imread(path)
+        if image is None:
+            raise OSError('{} is not found'.format(path))
+        elif image.shape[2] == 1:
+            # If the image has 1 channel, it's likely grayscale, so convert to RGB
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        image = np.array(image)
+        image = image[:, :, ::-1]
+
+        # align the face image if the source and target landmarks are given
+        src_landmark = item.get('src_landmark')
+        tgz_landmark = item.get('tgz_landmark')
+        crop_size = item.get('crop_size')
+        if not (src_landmark is None or tgz_landmark is None or crop_size is None):
+            tform = transform.SimilarityTransform()
+            tform.estimate(tgz_landmark, src_landmark)
+            M = tform.params[0:2, :]
+            image = cv2.warpAffine(image, M, crop_size, borderValue=0.0)
+
+        # normalize to [-1, 1]
+        image = ((image - 127.5) / 127.5)
+        image = np.transpose(image, (2, 0, 1)).astype(np.float32)
+        if not self.test_mode and random.random() > 0.5:
+            image = np.flip(image, axis=2).copy()
+        #********************#
+        
+        label = self.label_items[idx]['label']
+
+        return image, label

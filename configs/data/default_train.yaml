@@ -4,5 +4,5 @@ num_classes: 5281
 val_data_name: lfw
 data_dir: ${paths.data_dir}
 batch_size: 2048
-num_workers: 24
+num_workers: 12
 pin_memory: False

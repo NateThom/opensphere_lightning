@@ -16,6 +16,9 @@ def image_pipeline(info, test_mode):
     image = cv2.imread(path)
     if image is None:
         raise OSError('{} is not found'.format(path))
+    elif image.shape[2] == 1:
+        # If the image has 1 channel, it's likely grayscale, so convert to RGB
+        image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
     image = np.array(image)
     image = image[:, :, ::-1]
 

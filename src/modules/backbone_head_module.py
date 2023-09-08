@@ -1,9 +1,11 @@
 from typing import Any, Dict, Tuple
 
 import torch
+from torch.nn.utils import clip_grad_norm_
 from lightning import LightningModule
 from torchmetrics import MaxMetric, MeanMetric
 from torchmetrics.classification.accuracy import Accuracy
+
 
 class Backbone_Head_Module(LightningModule):
     """Example of a `LightningModule` for MNIST classification.
@@ -45,6 +47,7 @@ class Backbone_Head_Module(LightningModule):
         head: torch.nn.Module,
         optimizer: torch.optim.Optimizer,
         scheduler: torch.optim.lr_scheduler,
+        clip_grad_norm: float,
         compile: bool,
     ) -> None:
         """Initialize a `MNISTLitModule`.
@@ -60,23 +63,17 @@ class Backbone_Head_Module(LightningModule):
         self.save_hyperparameters(logger=False)
 
         # loss function
-        self.criterion = head
-
-        self.backbone = backbone
         self.head = head
 
-        # metric objects for calculating and averaging accuracy across batches
-        self.train_acc = Accuracy(task="multiclass", num_classes=num_classes)
-        self.val_acc = Accuracy(task="multiclass", num_classes=num_classes)
-        self.test_acc = Accuracy(task="multiclass", num_classes=num_classes)
+        self.backbone = backbone
 
         # for averaging loss across batches
         self.train_loss = MeanMetric()
         self.val_loss = MeanMetric()
         self.test_loss = MeanMetric()
 
-        # for tracking best so far validation accuracy
-        self.val_acc_best = MaxMetric()
+        # for tracking best so far validation loss
+        self.val_loss_best = MaxMetric()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Perform a forward pass through the model `self.net`.
@@ -92,8 +89,7 @@ class Backbone_Head_Module(LightningModule):
         # by default lightning executes validation step sanity checks before training starts,
         # so it's worth to make sure validation metrics don't store results from these checks
         self.val_loss.reset()
-        self.val_acc.reset()
-        self.val_acc_best.reset()
+        self.val_loss_best.reset()
 
     def model_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor]
@@ -109,9 +105,9 @@ class Backbone_Head_Module(LightningModule):
         """
         x, y = batch
         logits = self.forward(x)
-        loss = self.criterion(logits, y)
-        preds = torch.argmax(logits, dim=1)
-        return loss, preds, y
+        loss = self.head(logits, y)
+        # preds = torch.argmax(logits, dim=1)
+        return loss
 
     def training_step(
         self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
@@ -123,19 +119,41 @@ class Backbone_Head_Module(LightningModule):
         :param batch_idx: The index of the current batch.
         :return: A tensor of losses between model predictions and targets.
         """
-        loss, preds, targets = self.model_step(batch)
+        # loss, preds, targets = self.model_step(batch)
+        loss = self.model_step(batch)
 
         # update and log metrics
         self.train_loss(loss)
-        self.train_acc(preds, targets)
         self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("train/acc", self.train_acc, on_step=False, on_epoch=True, prog_bar=True)
 
         # return loss or backpropagation will fail
         return loss
+    
+    def on_after_backward(
+        self, 
+        ) -> None:
+        clip_grad_norm_(
+            self.backbone.parameters(), 
+            max_norm=self.hparams.clip_grad_norm, 
+            norm_type=2
+        )
+        
+        clip_grad_norm_(
+            self.head.parameters(),
+            self.hparams.clip_grad_norm,
+            norm_type=2
+        )
 
     def on_train_epoch_end(self) -> None:
         "Lightning hook that is called when a training epoch ends."
+        pass
+
+    def on_validation_epoch_begin(self) -> None:
+        "Lightning hook that is called when a validation epoch ends."
+        self.val_loss_best(self.val_loss.compute())  # update best so far val acc
+        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
+        # otherwise metric would be reset by lightning after each epoch
+        self.log("val/loss_best", self.val_loss_best.compute(), sync_dist=True, prog_bar=True)
         pass
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
@@ -145,21 +163,20 @@ class Backbone_Head_Module(LightningModule):
             labels.
         :param batch_idx: The index of the current batch.
         """
-        loss, preds, targets = self.model_step(batch)
+        # loss, preds, targets = self.model_step(batch)
+        loss = self.model_step(batch)
 
         # update and log metrics
         self.val_loss(loss)
-        self.val_acc(preds, targets)
         self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("val/acc", self.val_acc, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        acc = self.val_acc.compute()  # get current val acc
-        self.val_acc_best(acc)  # update best so far val acc
+        self.val_loss_best(self.val_loss.compute())  # update best so far val acc
         # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
         # otherwise metric would be reset by lightning after each epoch
-        self.log("val/acc_best", self.val_acc_best.compute(), sync_dist=True, prog_bar=True)
+        self.log("val/loss_best", self.val_loss_best.compute(), sync_dist=True, prog_bar=True)
+        pass
 
     def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single test step on a batch of data from the test set.
@@ -168,13 +185,12 @@ class Backbone_Head_Module(LightningModule):
             labels.
         :param batch_idx: The index of the current batch.
         """
-        loss, preds, targets = self.model_step(batch)
+        # loss, preds, targets = self.model_step(batch)
+        loss = self.model_step(batch)
 
         # update and log metrics
         self.test_loss(loss)
-        self.test_acc(preds, targets)
         self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
-        self.log("test/acc", self.test_acc, on_step=False, on_epoch=True, prog_bar=True)
 
     def on_test_epoch_end(self) -> None:
         """Lightning hook that is called when a test epoch ends."""
@@ -190,7 +206,8 @@ class Backbone_Head_Module(LightningModule):
         :param stage: Either `"fit"`, `"validate"`, `"test"`, or `"predict"`.
         """
         if self.hparams.compile and stage == "fit":
-            self.net = torch.compile(self.net)
+            self.backbone = torch.compile(self.backbone)
+            self.head = torch.compile(self.head)
 
     def configure_optimizers(self) -> Dict[str, Any]:
         """Choose what optimizers and learning-rate schedulers to use in your optimization.
@@ -217,4 +234,4 @@ class Backbone_Head_Module(LightningModule):
 
 
 if __name__ == "__main__":
-    _ = MNISTLitModule(None, None, None, None)
+    _ = Backbone_Head_Module(None, None, None, None, None, None)

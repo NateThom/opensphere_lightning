@@ -1,11 +1,16 @@
-import torch
 import os.path as osp
+import random
 
 import torch
 import torch.nn.functional as F
-
 from torch.utils.data import Dataset
-from .utils import image_pipeline, get_metrics
+
+import numpy as np
+import cv2
+
+from skimage import transform
+
+from .utils import get_metrics
 
 
 class PairDataset(Dataset):
@@ -58,14 +63,6 @@ class PairDataset(Dataset):
             self.indices1.append(path2index[path1])
             self.labels.append(int(label))
 
-    def prepare(self, idx):
-        # load image and pre-process (pipeline) from path
-        path = self.data_items[idx]['path']
-        item = {'path': osp.join(self.data_dir, path)}
-        image = image_pipeline(item, self.test_mode)
-
-        return image, idx
-
     def evaluate(self, feats, 
             FPRs=['1e-4', '5e-4', '1e-3', '5e-3', '5e-2']):
         # pair-wise scores
@@ -80,4 +77,36 @@ class PairDataset(Dataset):
         return len(self.data_items)
 
     def __getitem__(self, idx):
-        return self.prepare(idx)
+        # load image and pre-process (pipeline) from path
+        path = self.data_items[idx]['path']
+        item = {'path': osp.join(self.data_dir, path)}
+
+        path = item['path']
+        #image = Image.open(path).convert('RGB')
+        image = cv2.imread(path)
+        if image is None:
+            raise OSError('{} is not found'.format(path))
+        elif image.shape[2] == 1:
+            # If the image has 1 channel, it's likely grayscale, so convert to RGB
+            image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
+        image = np.array(image)
+        image = image[:, :, ::-1]
+
+        # align the face image if the source and target landmarks are given
+        src_landmark = item.get('src_landmark')
+        tgz_landmark = item.get('tgz_landmark')
+        crop_size = item.get('crop_size')
+        if not (src_landmark is None or tgz_landmark is None or crop_size is None):
+            tform = transform.SimilarityTransform()
+            tform.estimate(tgz_landmark, src_landmark)
+            M = tform.params[0:2, :]
+            image = cv2.warpAffine(image, M, crop_size, borderValue=0.0)
+
+        # normalize to [-1, 1]
+        image = ((image - 127.5) / 127.5)
+        image = np.transpose(image, (2, 0, 1)).astype(np.float32)
+        if not self.test_mode and random.random() > 0.5:
+            image = np.flip(image, axis=2).copy()
+        #********************#
+
+        return image, idx
