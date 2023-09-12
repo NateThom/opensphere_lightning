@@ -10,9 +10,6 @@ import cv2
 
 from skimage import transform
 
-from .utils import get_metrics
-
-
 class PairDataset(Dataset):
     def __init__(self, name, data_dir, ann_path, metrics,
             test_mode=True):
@@ -62,16 +59,6 @@ class PairDataset(Dataset):
             self.indices0.append(path2index[path0])
             self.indices1.append(path2index[path1])
             self.labels.append(int(label))
-
-    def evaluate(self, feats, 
-            FPRs=['1e-4', '5e-4', '1e-3', '5e-3', '5e-2']):
-        # pair-wise scores
-        feats = F.normalize(feats, dim=1)
-        feats0 = feats[self.indices0, :]
-        feats1 = feats[self.indices1, :]
-        scores = torch.sum(feats0 * feats1, dim=1).tolist()
-
-        return get_metrics(self.labels, scores, FPRs)
 
     def __len__(self):
         return len(self.data_items)

@@ -2,9 +2,13 @@ from typing import Any, Dict, Tuple
 
 import torch
 from torch.nn.utils import clip_grad_norm_
+import torch.nn.functional as F
 from lightning import LightningModule
 from torchmetrics import MaxMetric, MeanMetric
-from torchmetrics.classification.accuracy import Accuracy
+
+from sklearn import metrics
+from scipy.optimize import brentq
+from scipy.interpolate import interp1d
 
 
 class Backbone_Head_Module(LightningModule):
@@ -44,9 +48,13 @@ class Backbone_Head_Module(LightningModule):
         self,
         num_classes,
         backbone: torch.nn.Module,
+        # optimizer: torch.optim.Optimizer,
+        # scheduler: torch.optim.lr_scheduler,
+        optimizer_backbone: torch.optim.Optimizer,
+        scheduler_backbone: torch.optim.lr_scheduler,
         head: torch.nn.Module,
-        optimizer: torch.optim.Optimizer,
-        scheduler: torch.optim.lr_scheduler,
+        optimizer_head: torch.optim.Optimizer,
+        scheduler_head: torch.optim.lr_scheduler,
         clip_grad_norm: float,
         compile: bool,
     ) -> None:
@@ -57,23 +65,44 @@ class Backbone_Head_Module(LightningModule):
         :param scheduler: The learning rate scheduler to use for training.
         """
         super().__init__()
+        self.automatic_optimization = False
 
         # this line allows to access init params with 'self.hparams' attribute
         # also ensures init params will be stored in ckpt
         self.save_hyperparameters(logger=False)
 
-        # loss function
+        self.backbone = backbone
         self.head = head
 
-        self.backbone = backbone
+    def evaluate(self, dataset, feats, FPRs=['1e-4', '5e-4', '1e-3', '5e-3', '5e-2']):
+        # pair-wise scores
+        feats = F.normalize(feats, dim=1)
+        feats0 = feats[dataset.indices0, :]
+        feats1 = feats[dataset.indices0, :]
+        scores = torch.sum(feats0 * feats1, dim=1).tolist()
+    
+        # eer and auc
+        fpr, tpr, _ = metrics.roc_curve(dataset.labels, scores, pos_label=1)
+        roc_curve = interp1d(fpr, tpr)
+        EER = 100. * brentq(lambda x : 1. - x - roc_curve(x), 0., 1.)
+        AUC = 100. * metrics.auc(fpr, tpr)
 
-        # for averaging loss across batches
-        self.train_loss = MeanMetric()
-        self.val_loss = MeanMetric()
-        self.test_loss = MeanMetric()
+        # get acc
+        tnr = 1. - fpr
+        pos_num = dataset.labels.count(1)
+        neg_num = dataset.labels.count(0)
+        ACC = 100. * max(tpr * pos_num + tnr * neg_num) / len(dataset.labels)
 
-        # for tracking best so far validation loss
-        self.val_loss_best = MaxMetric()
+        # TPR @ FPR
+        if isinstance(FPRs, list):
+            TPRs = [
+                ('TPR@FPR={}'.format(FPR), 100. * roc_curve(float(FPR)))
+                for FPR in FPRs
+            ]
+        else:
+            TPRs = []
+
+        return [('ACC', ACC), ('EER', EER), ('AUC', AUC)] + TPRs
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Perform a forward pass through the model `self.net`.
@@ -84,33 +113,8 @@ class Backbone_Head_Module(LightningModule):
         x = self.backbone(x)
         return x
 
-    def on_train_start(self) -> None:
-        """Lightning hook that is called when training begins."""
-        # by default lightning executes validation step sanity checks before training starts,
-        # so it's worth to make sure validation metrics don't store results from these checks
-        self.val_loss.reset()
-        self.val_loss_best.reset()
-
-    def model_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor]
-    ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-        """Perform a single model step on a batch of data.
-
-        :param batch: A batch of data (a tuple) containing the input tensor of images and target labels.
-
-        :return: A tuple containing (in order):
-            - A tensor of losses.
-            - A tensor of predictions.
-            - A tensor of target labels.
-        """
-        x, y = batch
-        logits = self.forward(x)
-        loss = self.head(logits, y)
-        # preds = torch.argmax(logits, dim=1)
-        return loss
-
     def training_step(
-        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int
+        self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int,
     ) -> torch.Tensor:
         """Perform a single training step on a batch of data from the training set.
 
@@ -119,42 +123,45 @@ class Backbone_Head_Module(LightningModule):
         :param batch_idx: The index of the current batch.
         :return: A tensor of losses between model predictions and targets.
         """
-        # loss, preds, targets = self.model_step(batch)
-        loss = self.model_step(batch)
+        opt1, opt2 = self.optimizers()
+        sch1, sch2 = self.lr_schedulers()
+
+        opt1.zero_grad()
+        opt2.zero_grad()
+
+        x, y = batch
+        logits = self.forward(x)
+        loss = self.head(logits, y)
+
+        self.manual_backward(loss)
+
+        b_grad = clip_grad_norm_(
+                self.backbone.parameters(),
+                max_norm=self.hparams.clip_grad_norm, norm_type=2)
+        h_grad = clip_grad_norm_(
+                self.head.parameters(),
+                max_norm=self.hparams.clip_grad_norm, norm_type=2)
+
+        opt1.step()
+        sch1.step()
+        
+        opt2.step()
+        sch2.step()
 
         # update and log metrics
-        self.train_loss(loss)
-        self.log("train/loss", self.train_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("train/loss", loss, on_step=True, on_epoch=True, prog_bar=True)
+        self.log("train/bkb_grad", b_grad, on_step=True, on_epoch=False, prog_bar=True)
+        self.log("train/head_grad", h_grad, on_step=True, on_epoch=False, prog_bar=True)
 
-        # return loss or backpropagation will fail
-        return loss
-    
-    def on_after_backward(
-        self, 
-        ) -> None:
-        clip_grad_norm_(
-            self.backbone.parameters(), 
-            max_norm=self.hparams.clip_grad_norm, 
-            norm_type=2
-        )
-        
-        clip_grad_norm_(
-            self.head.parameters(),
-            self.hparams.clip_grad_norm,
-            norm_type=2
-        )
+        # return loss
 
     def on_train_epoch_end(self) -> None:
         "Lightning hook that is called when a training epoch ends."
         pass
 
-    def on_validation_epoch_begin(self) -> None:
+    def on_validation_epoch_start(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        self.val_loss_best(self.val_loss.compute())  # update best so far val acc
-        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
-        # otherwise metric would be reset by lightning after each epoch
-        self.log("val/loss_best", self.val_loss_best.compute(), sync_dist=True, prog_bar=True)
-        pass
+        self.val_feats_aggregate = torch.zeros([len(self.trainer.datamodule.data_val), self.backbone.fc.out_features], dtype=torch.float32).to(self.device)
 
     def validation_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
         """Perform a single validation step on a batch of data from the validation set.
@@ -163,38 +170,22 @@ class Backbone_Head_Module(LightningModule):
             labels.
         :param batch_idx: The index of the current batch.
         """
-        # loss, preds, targets = self.model_step(batch)
-        loss = self.model_step(batch)
+        x, indices = batch
+        logits = self.forward(x)
+        x = torch.flip(x, [3])
+        logits += self.forward(x)
+        logits = logits.float()
 
-        # update and log metrics
-        self.val_loss(loss)
-        self.log("val/loss", self.val_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.val_feats_aggregate[indices, :] = logits
 
     def on_validation_epoch_end(self) -> None:
         "Lightning hook that is called when a validation epoch ends."
-        self.val_loss_best(self.val_loss.compute())  # update best so far val acc
-        # log `val_acc_best` as a value through `.compute()` method, instead of as a metric object
-        # otherwise metric would be reset by lightning after each epoch
-        self.log("val/loss_best", self.val_loss_best.compute(), sync_dist=True, prog_bar=True)
-        pass
+        self.val_feats_aggregate = self.all_gather(self.val_feats_aggregate)
+        results = self.evaluate(self.trainer.datamodule.data_val, self.val_feats_aggregate.cpu())
 
-    def test_step(self, batch: Tuple[torch.Tensor, torch.Tensor], batch_idx: int) -> None:
-        """Perform a single test step on a batch of data from the test set.
-
-        :param batch: A batch of data (a tuple) containing the input tensor of images and target
-            labels.
-        :param batch_idx: The index of the current batch.
-        """
-        # loss, preds, targets = self.model_step(batch)
-        loss = self.model_step(batch)
-
-        # update and log metrics
-        self.test_loss(loss)
-        self.log("test/loss", self.test_loss, on_step=False, on_epoch=True, prog_bar=True)
-
-    def on_test_epoch_end(self) -> None:
-        """Lightning hook that is called when a test epoch ends."""
-        pass
+        self.log("val/acc", results[0][1], on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/eer", results[1][1], on_step=False, on_epoch=True, prog_bar=True)
+        self.log("val/auc", results[2][1], on_step=False, on_epoch=True, prog_bar=True)
 
     def setup(self, stage: str) -> None:
         """Lightning hook that is called at the beginning of fit (train + validate), validate,
@@ -218,20 +209,21 @@ class Backbone_Head_Module(LightningModule):
 
         :return: A dict containing the configured optimizers and learning-rate schedulers to be used for training.
         """
-        optimizer = self.hparams.optimizer(params=self.parameters())
-        if self.hparams.scheduler is not None:
-            scheduler = self.hparams.scheduler(optimizer=optimizer)
-            return {
-                "optimizer": optimizer,
-                "lr_scheduler": {
-                    "scheduler": scheduler,
-                    "monitor": "val/loss",
-                    "interval": "epoch",
-                    "frequency": 1,
-                },
-            }
-        return {"optimizer": optimizer}
+        optimizer_backbone = self.hparams.optimizer_backbone(params=self.backbone.parameters())
+        optimizer_head = self.hparams.optimizer_head(params=self.head.parameters())
+        if self.hparams.scheduler_backbone is not None:
+            scheduler_backbone = self.hparams.scheduler_backbone(optimizer=optimizer_backbone)
+            scheduler_head = self.hparams.scheduler_head(optimizer=optimizer_head)
 
+            return [optimizer_backbone, optimizer_head], [{"scheduler": scheduler_backbone}, {"scheduler": scheduler_head}]
+        return [optimizer_backbone, optimizer_head]
+
+        # optimizer = self.hparams.optimizer(params=self.parameters())
+        # if self.hparams.scheduler is not None:
+        #     scheduler = self.hparams.scheduler(optimizer=optimizer)
+
+        #     return [optimizer], [{"scheduler": scheduler}]
+        # return [optimizer]
 
 if __name__ == "__main__":
     _ = Backbone_Head_Module(None, None, None, None, None, None)

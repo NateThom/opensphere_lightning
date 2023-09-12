@@ -1,9 +1,7 @@
 from typing import Any, Dict, Optional, Tuple
 
-import torch
 from lightning import LightningDataModule
-from torch.utils.data import ConcatDataset, DataLoader, Dataset, random_split
-from torchvision.transforms import transforms
+from torch.utils.data import DataLoader, Dataset, random_split
 
 from .components import ClassDataset, PairDataset
 
@@ -51,10 +49,11 @@ class ClassPairDataModule(LightningDataModule):
         self,
         train_data_name: str,
         num_classes: int,
+        train_data_batch_size: int,
         val_data_name: str,
+        val_data_batch_size: int,
         data_dir: str = "data/",
         metrics: list = ["ACC"],
-        batch_size: int = 64,
         num_workers: int = 0,
         pin_memory: bool = False,
     ) -> None:
@@ -132,7 +131,7 @@ class ClassPairDataModule(LightningDataModule):
         """
         return DataLoader(
             dataset=self.data_train,
-            batch_size=self.hparams.batch_size,
+            batch_size=self.hparams.train_data_batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=True,
@@ -145,7 +144,7 @@ class ClassPairDataModule(LightningDataModule):
         """
         return DataLoader(
             dataset=self.data_val,
-            batch_size=self.hparams.batch_size,
+            batch_size=self.hparams.val_data_batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=False,
@@ -158,7 +157,7 @@ class ClassPairDataModule(LightningDataModule):
         """
         return DataLoader(
             dataset=self.data_test,
-            batch_size=self.hparams.batch_size,
+            batch_size=self.hparams.val_data_batch_size,
             num_workers=self.hparams.num_workers,
             pin_memory=self.hparams.pin_memory,
             shuffle=False,

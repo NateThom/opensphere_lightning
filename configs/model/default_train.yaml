@@ -1,19 +1,6 @@
 _target_: src.modules.backbone_head_module.Backbone_Head_Module
 num_classes: ${data.num_classes}
 
-optimizer:
-  _target_: torch.optim.SGD
-  _partial_: true
-  lr: 0.01
-  momentum: 0.9
-  weight_decay: 0.0005
-
-scheduler:
-  _target_: torch.optim.lr_scheduler.MultiStepLR
-  _partial_: true
-  milestones: [50000, 78000, 94000, 100000]
-  gamma: 0.1
-
 clip_grad_norm: 1e5
 
 backbone:
@@ -21,6 +8,19 @@ backbone:
   in_channel: 3
   channels: [64, 128, 256, 512]
   out_channel: 512
+
+optimizer_backbone:
+  _target_: torch.optim.SGD
+  _partial_: true
+  lr: 0.1
+  momentum: 0.9
+  weight_decay: 0.0005
+
+scheduler_backbone:
+  _target_: torch.optim.lr_scheduler.MultiStepLR
+  _partial_: true
+  milestones: [50000, 78000, 94000, 100000]
+  gamma: 0.01
 
 head:
   _target_: src.modules.components.head.sphereface2.SphereFace2
@@ -31,7 +31,33 @@ head:
   r: 40.0
   m: 0.4 
   t: 3.0 
-  lw: 50.0
+  lw: 10.0
+
+optimizer_head:
+  _target_: torch.optim.SGD
+  _partial_: true
+  lr: 0.1
+  momentum: 0.9
+  weight_decay: 0.0005
+
+scheduler_head:
+  _target_: torch.optim.lr_scheduler.MultiStepLR
+  _partial_: true
+  milestones: [50000, 78000, 94000, 100000]
+  gamma: 0.1
+
+# optimizer:
+#   _target_: torch.optim.SGD
+#   _partial_: true
+#   lr: 0.1
+#   momentum: 0.9
+#   weight_decay: 0.0005
+
+# scheduler:
+#   _target_: torch.optim.lr_scheduler.MultiStepLR
+#   _partial_: true
+#   milestones: [50000, 78000, 94000, 100000]
+#   gamma: 0.1
 
 # compile model for faster training with pytorch 2.0
-compile: false
+compile: True

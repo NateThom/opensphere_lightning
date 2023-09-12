@@ -1,6 +1,5 @@
 import os.path as osp
 
-from .utils import image_pipeline
 from torch.utils.data import Dataset
 
 

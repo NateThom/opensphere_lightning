@@ -9,7 +9,7 @@ accelerator: cpu
 devices: 1
 
 # mixed precision for extra speed-up
-# precision: 16
+precision: 16
 
 # perform a validation loop every N training epochs
 check_val_every_n_epoch: 1
@@ -19,4 +19,4 @@ check_val_every_n_epoch: 1
 deterministic: True
 benchmark: True
 
-gradient_clip_val: 1e5
+# gradient_clip_val: 1e5

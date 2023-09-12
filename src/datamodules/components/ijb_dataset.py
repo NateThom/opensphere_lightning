@@ -9,7 +9,6 @@ from torch.utils.data import Dataset
 from sklearn.metrics import roc_curve
 from scipy.interpolate import interp1d
 
-from .utils import image_pipeline, get_metrics
 
 
 class IJBDataset(Dataset):
