@@ -397,4 +397,3 @@ dependencies:
       - rootutils==1.0.7
       - sqlalchemy==2.0.20
       - stevedore==5.1.0
-prefix: /home/nthom/miniconda3/envs/opensphere_lightning
