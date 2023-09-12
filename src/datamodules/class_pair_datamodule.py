@@ -109,9 +109,6 @@ class ClassPairDataModule(LightningDataModule):
         # load and split datasets only if not loaded already
         if not self.data_train and not self.data_val and not self.data_test:
             # Calculate the data distribution for each node/GPU
-            self.train_dataset = datasets.CIFAR10(root=self.data_dir, train=True, transform=transforms.ToTensor())
-            self.train_dataset = self.train_dataset[data_start:data_end]
-            self.val_dataset = full_dataset[num_train:num_train+num_val]
 
             self.data_train = ClassDataset(
                 self.hparams.train_data_name, 
