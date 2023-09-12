@@ -9,4 +9,9 @@
 defaults:
   - override /trainer: ddp_multiple_nodes
 
+data:
+  - train_data_batch_size: 1
+  - val_data_batch_size: 1
+  - num_workers: 1
+
 seed: 2
