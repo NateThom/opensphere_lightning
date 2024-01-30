@@ -1,4 +1,5 @@
 import argparse
+import configparser
 from glob import glob
 import time
 import yaml
@@ -79,55 +80,54 @@ from pytorch_lightning.loggers import TensorBoardLogger
 #         parser.add_argument('--learning_rate', type=float, default=0.0001)
 #         return parser
 
-def get_config_from_args():
-    # get arguments
-    parser = argparse.ArgumentParser(
-            description='A PyTorch framework for deep metric learning.')
-    parser.add_argument('--cfg_path', default='',
-            help='path of training config')
-    parser.add_argument('--proj_dir', default='./project',
-            help='the dir to save logs and models')
-    args = parser.parse_args()
-
-    # check if resume from a project
-    ckpt_paths = glob(osp.join(args.proj_dir, 'checkpoint/ckpt_*.pth'))
-    if len(ckpt_paths) > 0:
-        # if resume, project directory should be provided
-        cfg_path = osp.join(args.proj_dir, 'config.yml')
-    else:
-        # if not, path to config file should be provided
-        cfg_path = args.cfg_path
-
-    # get config
-    with open(cfg_path, 'r') as f:
-        config = yaml.load(f, yaml.SafeLoader)
-
-    # update config with args
-    trainer_cfg = config['trainer']
-    trainer_cfg['proj_dir'] = args.proj_dir
-
-    # time to start
-    # start_time = time.strptime(args.start_time, '%Y%m%d_%H%M%S')
-    # while time.localtime() < start_time:
-    #     print(args.start_time)
-    #     time.sleep(666)
-    # print('start...')
-
+def read_config(file_path):
+    config = configparser.ConfigParser()
+    config.read(file_path)
     return config
+
+def setup_arg_parser(config):
+    parser = argparse.ArgumentParser(description='My PyTorch Lightning Project')
+
+    # Add an argument for the configuration file path
+    parser.add_argument('--config_path', type=str, required=True, help='Path to the configuration file')
+
+    # Iterate over sections and options to dynamically add arguments
+    for section in config.sections():
+        for option in config.options(section):
+            arg_name = f'--{section}_{option}'
+            arg_value = config.get(section, option)
+            arg_type = type(arg_value)
+            parser.add_argument(arg_name, type=arg_type, default=arg_value, help=f'{section}.{option} in the configuration file')
+
+    # Add any additional command-line arguments you need
+    parser.add_argument('--epochs', type=int, default=10, help='Number of training epochs')
+
+    return parser
 
 def cli_main():
     # ------------
     # args
     # ------------
-    config = get_config_from_args()
 
-    transform_objects = []
-    for transform_config in config['transforms']:
-        transform_objects.append(build_from_args(transform_config, 'torchvision.transforms'))
-    augmentation = torchvision.transforms.Compose(transform_objects)
+    # Parse command-line arguments to get the configuration file path
+    arg_parser = argparse.ArgumentParser()
+    arg_parser.add_argument('--config_path', type=str, required=True, help='Path to the configuration file')
+    args, _ = arg_parser.parse_known_args()
 
-    # trainer_args = {'type': config['trainer']['type'], 'config': config}
-    # trainer = build_from_args(trainer_args, 'opensphere')
+    # Read the configuration file
+    config = read_config(args.config_path)
+
+    # Setup the ArgumentParser based on the configuration file
+    arg_parser = setup_arg_parser(config)
+
+    # Parse the command-line arguments
+    args = arg_parser.parse_args()
+
+    # Use the values obtained from argparse
+    epochs = args.epochs
+
+    # Use these values in your PyTorch Lightning project
+    print(f"Epochs: {epochs}")
 
     temp = 0
 
